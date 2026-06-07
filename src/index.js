@@ -223,6 +223,32 @@ client.on('messageCreate', async message => {
   const args = message.content.slice(prefix.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
+  // ===== CHANNEL DISABLE CHECK - SABSE UPAR =====
+  const disabledChannels = guildData?.disabled_channels || [];
+  const isDisabled = disabledChannels.includes(channelId);
+  const isAdmin = message.member.permissions.has(PermissionsBitField.Flags.Administrator);
+
+  // Agar channel disabled hai
+  if (isDisabled) {
+    // Sirf 'enable' command allow hai, aur wo bhi sirf Admin ke liye
+    if (command === 'enable' &&!args[0]) {
+      if (!isAdmin) {
+        return message.reply('You need Administrator permission!');
+      }
+      await sql`
+        INSERT INTO guilds (guild_id, disabled_channels)
+        VALUES (${guildId}, '{}')
+        ON CONFLICT (guild_id) DO UPDATE SET
+        disabled_channels = array_remove(guilds.disabled_channels, ${channelId})
+      `;
+      const embed = makeEmbed(null, '✅ Bot commands enabled in this channel!');
+      return message.reply({ embeds: [embed] });
+    }
+    // Baaki sab commands block - koi reply nahi
+    return;
+  }
+  // ===== DISABLE CHECK KHATAM =====
+
   if (command === 'ping') {
     const embed = makeEmbed('🏓 Pong!', `Latency: **${client.ws.ping}ms**`);
     return message.reply({ embeds: [embed] });
@@ -240,27 +266,8 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
 
-  const disabledChannels = guildData?.disabled_channels || [];
-  if (disabledChannels.includes(channelId) &&!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-    return;
-  }
-
-  if (command === 'enable' &&!args[0]) {
-    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-      return message.reply('You need Administrator permission!');
-    }
-    await sql`
-      INSERT INTO guilds (guild_id, disabled_channels)
-      VALUES (${guildId}, '{}')
-      ON CONFLICT (guild_id) DO UPDATE SET
-      disabled_channels = array_remove(guilds.disabled_channels, ${channelId})
-    `;
-    const embed = makeEmbed(null, '✅ Bot commands enabled in this channel!');
-    return message.reply({ embeds: [embed] });
-  }
-
   if (command === 'disable' &&!args[0]) {
-    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+    if (!isAdmin) {
       return message.reply('You need Administrator permission!');
     }
     await sql`
@@ -274,7 +281,7 @@ client.on('messageCreate', async message => {
   }
 
   if (command === 'enable' && args[0] === 'm') {
-    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+    if (!isAdmin) {
       return message.reply('You need Administrator permission!');
     }
     await sql`
@@ -288,7 +295,7 @@ client.on('messageCreate', async message => {
   }
 
   if (command === 'disable' && args[0] === 'm') {
-    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+    if (!isAdmin) {
       return message.reply('You need Administrator permission!');
     }
     await sql`
@@ -302,7 +309,7 @@ client.on('messageCreate', async message => {
   }
 
   if (command === 'enable' && args[0] === 'it') {
-    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+    if (!isAdmin) {
       return message.reply('You need Administrator permission!');
     }
     await sql`
@@ -315,7 +322,7 @@ client.on('messageCreate', async message => {
   }
 
   if (command === 'disable' && args[0] === 'it') {
-    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+    if (!isAdmin) {
       return message.reply('You need Administrator permission!');
     }
     await sql`UPDATE guilds SET tracker_channel = NULL WHERE guild_id = ${guildId}`;
@@ -408,7 +415,7 @@ client.on('messageCreate', async message => {
   }
 
   if (command === 'reset' && args[0] === 'all') {
-    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+    if (!isAdmin) {
       return message.reply('You need Administrator permission!');
     }
     await sql`DELETE FROM invites WHERE guild_id = ${guildId}`;
@@ -429,7 +436,7 @@ client.on('messageCreate', async message => {
       const embed = makeEmbed(null, `✅ Reset message data for ${target.username}`);
       return message.reply({ embeds: [embed] });
     } else if (args[1] === 'all') {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      if (!isAdmin) {
         return message.reply('You need Administrator permission!');
       }
       await sql`DELETE FROM messages WHERE guild_id = ${guildId}`;
