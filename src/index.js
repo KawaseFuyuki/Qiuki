@@ -1,5 +1,10 @@
 import { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionsBitField, ActivityType } from 'discord.js';
 import postgres from 'postgres';
+import express from 'express';
+
+const app = express();
+app.get('/', (req, res) => res.send('Qiuki Bot is running!'));
+app.listen(process.env.PORT || 3000);
 
 const client = new Client({
   intents: [
