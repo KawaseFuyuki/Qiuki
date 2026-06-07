@@ -1,92 +1,124 @@
-import { Client, GatewayIntentBits, EmbedBuilder, PermissionsBitField } from 'discord.js';
-import 'dotenv/config';
-import postgres from 'postgres';
-import { drizzle } from 'drizzle-orm/postgres-js';
-import * as schema from './db/schema.js';
-import { eq, and } from 'drizzle-orm';
+const { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionsBitField, ActivityType } = require('discord.js');
+const postgres = require('postgres');
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildInvites
-  ]
+  ],
+  partials: [Partials.Channel, Partials.Message, Partials.User, Partials.GuildMember]
 });
 
-const sql = postgres(process.env.DATABASE_URL);
-const db = drizzle(sql, { schema });
-const PREFIX = 'qi ';
+const sql = postgres(process.env.DATABASE_URL, { ssl: 'require' });
+const prefix = 'qi ';
 const invites = new Map();
 
-// Auto-create tables on start
-await sql`
-  CREATE TABLE IF NOT EXISTS guilds (
-    guild_id TEXT PRIMARY KEY,
-    tracker_channel TEXT,
-    disabled_all BOOLEAN DEFAULT FALSE,
-    message_channels TEXT[] DEFAULT '{}'
-  )
-`;
+// ===== DATABASE SETUP =====
+async function setupDB() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS guilds (
+      guild_id TEXT PRIMARY KEY,
+      tracker_channel TEXT,
+      disabled_channels TEXT[] DEFAULT '{}'
+    )
+  `;
 
-await sql`
-  CREATE TABLE IF NOT EXISTS invites (
-    id TEXT PRIMARY KEY,
-    guild_id TEXT,
-    user_id TEXT,
-    joins INTEGER DEFAULT 0,
-    leftCount INTEGER DEFAULT 0,
-    fake INTEGER DEFAULT 0,
-    rejoins INTEGER DEFAULT 0
-  )
-`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS invites (
+      id TEXT PRIMARY KEY,
+      guild_id TEXT,
+      user_id TEXT,
+      joins INTEGER DEFAULT 0,
+      leftCount INTEGER DEFAULT 0,
+      fake INTEGER DEFAULT 0,
+      rejoins INTEGER DEFAULT 0
+    )
+  `;
 
-await sql`
-  CREATE TABLE IF NOT EXISTS invite_users (
-    id TEXT PRIMARY KEY,
-    guild_id TEXT,
-    inviter_id TEXT,
-    member_id TEXT
-  )
-`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS invite_users (
+      id TEXT PRIMARY KEY,
+      guild_id TEXT,
+      inviter_id TEXT,
+      member_id TEXT
+    )
+  `;
 
-await sql`
-  CREATE TABLE IF NOT EXISTS messages (
-    id TEXT PRIMARY KEY,
-    guild_id TEXT,
-    user_id TEXT,
-    total INTEGER DEFAULT 0
-  )
-`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      guild_id TEXT,
+      user_id TEXT,
+      total INTEGER DEFAULT 0
+    )
+  `;
 
-await sql`
-  CREATE TABLE IF NOT EXISTS daily_messages (
-    id TEXT PRIMARY KEY,
-    guild_id TEXT,
-    user_id TEXT,
-    date TEXT,
-    count INTEGER DEFAULT 0
-  )
-`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS daily_messages (
+      id TEXT PRIMARY KEY,
+      guild_id TEXT,
+      user_id TEXT,
+      date TEXT,
+      count INTEGER DEFAULT 0
+    )
+  `;
 
-function makeEmbed(title, desc, user) {
-  return new EmbedBuilder()
-.setColor('#00FF00')
-.setTitle(title)
-.setDescription(desc)
-.setThumbnail(user.displayAvatarURL())
-.setFooter({ text: `created by kitaryo | Today at ${new Date().toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit'})}` });
+  try {
+    await sql`ALTER TABLE invites RENAME COLUMN left TO leftCount`;
+  } catch (e) {}
 }
 
+// ===== EMBED HELPER =====
+function makeEmbed(title, fields = [], user) {
+  const time = new Date().toLocaleTimeString('en-IN', { 
+    timeZone: 'Asia/Kolkata', 
+    hour: '2-digit', 
+    minute: '2-digit', 
+    hour12: true 
+  });
+  
+  const embed = new EmbedBuilder()
+  .setColor('#00FFFF')
+  .setTitle(title)
+  .setFooter({ text: `created by kitaryo | Today at ${time}` });
+
+  if (user) embed.setThumbnail(user.displayAvatarURL());
+  if (fields.length > 0) embed.addFields(fields);
+  
+  return embed;
+}
+
+// ===== GET DATA FUNCTIONS =====
 async function getInviteData(guildId, userId) {
   const id = `${guildId}-${userId}`;
-  const [data] = await db.select().from(schema.invites).where(eq(schema.invites.id, id));
+  const [data] = await sql`SELECT * FROM invites WHERE id = ${id}`;
   return data || { joins: 0, leftCount: 0, fake: 0, rejoins: 0 };
 }
 
+async function getMessageData(guildId, userId) {
+  const id = `${guildId}-${userId}`;
+  const [totalData] = await sql`SELECT total FROM messages WHERE id = ${id}`;
+  const today = new Date().toISOString().split('T')[0];
+  const todayId = `${guildId}-${userId}-${today}`;
+  const [todayData] = await sql`SELECT count FROM daily_messages WHERE id = ${todayId}`;
+  
+  return {
+    total: totalData?.total || 0,
+    today: todayData?.count || 0
+  };
+}
+
+// ===== BOT READY =====
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
+  await setupDB();
+  
+  // Set status
+  client.user.setActivity('anime for fun xD', { type: ActivityType.Watching });
+  
   for (const guild of client.guilds.cache.values()) {
     try {
       const guildInvites = await guild.invites.fetch();
@@ -95,220 +127,278 @@ client.once('ready', async () => {
   }
 });
 
+// ===== INVITE TRACKER =====
 client.on('guildMemberAdd', async member => {
   const cachedInvites = invites.get(member.guild.id);
   const newInvites = await member.guild.invites.fetch();
   const usedInvite = newInvites.find(inv => inv.uses > (cachedInvites?.get(inv.code) || 0));
-
+  
   if (usedInvite) {
     const inviterId = usedInvite.inviter.id;
     const id = `${member.guild.id}-${inviterId}`;
-    const [data] = await db.select().from(schema.invites).where(eq(schema.invites.id, id));
-
-    const existing = await db.select().from(schema.inviteUsers).where(and(
-      eq(schema.inviteUsers.guildId, member.guild.id),
-      eq(schema.inviteUsers.memberId, member.id)
-    ));
-
-    const isRejoin = existing.length > 0;
-    const isFake = Date.now() - member.user.createdTimestamp < 7 * 24 * 60 * 60 * 1000;
-
-    await db.insert(schema.invites).values({
-      id, guildId: member.guild.id, userId: inviterId,
-      joins: (data?.joins || 0) + 1,
-      left: data?.left || 0,
-      fake: (data?.fake || 0) + (isFake? 1 : 0),
-      rejoins: (data?.rejoins || 0) + (isRejoin? 1 : 0)
-    }).onConflictDoUpdate({
-      target: schema.invites.id,
-      set: {
-        joins: (data?.joins || 0) + 1,
-        fake: (data?.fake || 0) + (isFake? 1 : 0),
-        rejoins: (data?.rejoins || 0) + (isRejoin? 1 : 0)
-      }
-    });
-
-    if (!isRejoin) {
-      await db.insert(schema.inviteUsers).values({
-        id: `${member.guild.id}-${inviterId}-${member.id}`,
-        guildId: member.guild.id, inviterId, memberId: member.id
-      });
+    
+    await sql`
+      INSERT INTO invites (id, guild_id, user_id, joins) 
+      VALUES (${id}, ${member.guild.id}, ${inviterId}, 1)
+      ON CONFLICT (id) DO UPDATE SET joins = invites.joins + 1
+    `;
+    
+    await sql`
+      INSERT INTO invite_users (id, guild_id, inviter_id, member_id)
+      VALUES (${`${member.guild.id}-${member.id}`}, ${member.guild.id}, ${inviterId}, ${member.id})
+    `;
+    
+    const [guildData] = await sql`SELECT tracker_channel FROM guilds WHERE guild_id = ${member.guild.id}`;
+    if (guildData?.tracker_channel) {
+      const channel = member.guild.channels.cache.get(guildData.tracker_channel);
+      const data = await getInviteData(member.guild.id, inviterId);
+      const total = data.joins - data.leftCount;
+      channel?.send(`<@${inviterId}> invited ${member.user} now he have ${total} invite${total!== 1? 's' : ''}`);
     }
   }
-
+  
   invites.set(member.guild.id, new Map(newInvites.map(inv => [inv.code, inv.uses])));
-
-  const [guild] = await db.select().from(schema.guilds).where(eq(schema.guilds.guildId, member.guild.id));
-  if (guild?.trackerChannel) {
-    const channel = member.guild.channels.cache.get(guild.trackerChannel);
-    if (channel) {
-      const embed = new EmbedBuilder()
-  .setColor('#00FF00')
-  .setTitle('▶ New Member Joined')
-  .addFields(
-          { name: 'Member', value: `${member}`, inline: false },
-          { name: 'Invited by', value: usedInvite? `${usedInvite.inviter}` : 'Unknown', inline: false },
-          { name: 'Joined', value: `<t:${Math.floor(Date.now()/1000)}:R>`, inline: false }
-        )
-  .setFooter({ text: `created by kitaryo | Today at ${new Date().toLocaleTimeString()}` });
-      channel.send({ embeds: [embed] });
-    }
-  }
 });
 
 client.on('guildMemberRemove', async member => {
-  const [record] = await db.select().from(schema.inviteUsers).where(and(
-    eq(schema.inviteUsers.guildId, member.guild.id),
-    eq(schema.inviteUsers.memberId, member.id)
-  ));
-
-  if (record) {
-    const id = `${member.guild.id}-${record.inviterId}`;
-    const [data] = await db.select().from(schema.invites).where(eq(schema.invites.id, id));
-    if (data) await db.update(schema.invites).set({ left: data.left + 1 }).where(eq(schema.invites.id, id));
+  const [data] = await sql`
+    SELECT inviter_id FROM invite_users 
+    WHERE guild_id = ${member.guild.id} AND member_id = ${member.id}
+  `;
+  
+  if (data?.inviter_id) {
+    const id = `${member.guild.id}-${data.inviter_id}`;
+    await sql`UPDATE invites SET leftCount = leftCount + 1 WHERE id = ${id}`;
+    await sql`DELETE FROM invite_users WHERE guild_id = ${member.guild.id} AND member_id = ${member.id}`;
   }
 });
 
-client.on('messageCreate', async msg => {
-  if (msg.author.bot ||!msg.guild) return;
-
-  const [guild] = await db.select().from(schema.guilds).where(eq(schema.guilds.guildId, msg.guild.id));
-
-  if (guild?.messageChannels?.includes(msg.channel.id)) {
-    const id = `${msg.guild.id}-${msg.author.id}`;
-    const today = new Date().toISOString().slice(0, 10);
-    const dailyId = `${id}-${today}`;
-
-    const [msgData] = await db.select().from(schema.messages).where(eq(schema.messages.id, id));
-    await db.insert(schema.messages).values({ id, guildId: msg.guild.id, userId: msg.author.id, total: 1 })
-.onConflictDoUpdate({ target: schema.messages.id, set: { total: (msgData?.total || 0) + 1 } });
-
-    const [dailyData] = await db.select().from(schema.dailyMessages).where(eq(schema.dailyMessages.id, dailyId));
-    await db.insert(schema.dailyMessages).values({ id: dailyId, guildId: msg.guild.id, userId: msg.author.id, date: today, count: 1 })
-.onConflictDoUpdate({ target: schema.dailyMessages.id, set: { count: (dailyData?.count || 0) + 1 } });
+// ===== MESSAGE TRACKER =====
+client.on('messageCreate', async message => {
+  if (message.author.bot ||!message.guild) return;
+  
+  const guildId = message.guild.id;
+  const userId = message.author.id;
+  const channelId = message.channel.id;
+  const id = `${guildId}-${userId}`;
+  const today = new Date().toISOString().split('T')[0];
+  const todayId = `${guildId}-${userId}-${today}`;
+  
+  // Track messages
+  await sql`
+    INSERT INTO messages (id, guild_id, user_id, total) 
+    VALUES (${id}, ${guildId}, ${userId}, 1)
+    ON CONFLICT (id) DO UPDATE SET total = messages.total + 1
+  `;
+  
+  await sql`
+    INSERT INTO daily_messages (id, guild_id, user_id, date, count) 
+    VALUES (${todayId}, ${guildId}, ${userId}, ${today}, 1)
+    ON CONFLICT (id) DO UPDATE SET count = daily_messages.count + 1
+  `;
+  
+  if (!message.content.startsWith(prefix)) return;
+  
+  const args = message.content.slice(prefix.length).trim().split(/ +/);
+  const command = args.shift().toLowerCase();
+  
+  const [guildData] = await sql`SELECT * FROM guilds WHERE guild_id = ${guildId}`;
+  
+  // ===== PING - Always works =====
+  if (command === 'ping') {
+    return message.reply(`Pong! ${client.ws.ping}ms`);
   }
-
-  if (!msg.content.toLowerCase().startsWith(PREFIX)) return;
-  if (guild?.disabledAll &&!msg.member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
-
-  const args = msg.content.slice(PREFIX.length).trim().split(/ +/);
-  const cmd = args.shift().toLowerCase();
-
-  if (cmd === 'ping') {
-    msg.reply({ embeds: [makeEmbed('Pong!', `Bot Latency: ${client.ws.ping}ms`, msg.author)] });
+  
+  // ===== HELP - Always works =====
+  if (command === 'help') {
+    const embed = makeEmbed('Qiuki Commands', [
+      { name: '📨 Invites', value: '`qi i` - Your invites\n`qi invited @user` - User invite list\n`qi lb i` - Invite leaderboard', inline: false },
+      { name: '💬 Messages', value: '`qi m` - Your messages\n`qi lb m` - Message leaderboard', inline: false },
+      { name: '⚙️ Admin - Invites', value: '`qi reset i @user` - Reset user invites\n`qi reset all` - Reset all invites\n`qi enable it` - Enable tracker here\n`qi disable it` - Disable tracker', inline: false },
+      { name: '⚙️ Admin - Messages', value: '`qi reset m @user` - Reset user messages\n`qi reset m all` - Reset all messages', inline: false },
+      { name: '⚙️ Admin - Channels', value: '`qi enable` - Enable bot in this channel\n`qi disable` - Disable bot in this channel', inline: false }
+    ]);
+    return message.reply({ embeds: [embed] });
   }
-
-  if (cmd === 'help') {
-    const embed = new EmbedBuilder()
-.setColor('#00FF00')
-.setTitle(':green_arrow: qi Bot — Commands')
-.addFields(
-        { name: '🔍 Invite Tracker', value: '`qi it enable` — Enable tracker in this channel\n`qi it enable #channel` — Enable in a channel\n`qi it disable` — Disable tracker' },
-        { name: '💬 Message Commands', value: '`qi m` — Your message count\n`qi m @user` — Someone\'s message count\n`qi m enable` — Enable counting in this channel\n`qi m disable` — Disable counting\n`qi lb m` — Message leaderboard' },
-        { name: '👤 User Info', value: '`qi acc` — Your account age\n`qi acc @user` — Someone\'s account age\n`qi invited` — People you invited\n`qi invited @user` — People someone else invited' },
-        { name: '⚙️ Settings', value: '`qi disable all` — Disable all commands\n`qi enable all` — Enable all commands\n`qi ping` — Bot latency' }
-      )
-.setFooter({ text: `created by kitaryo | Today at ${new Date().toLocaleTimeString()}` });
-    msg.reply({ embeds: [embed] });
+  
+  // Check if channel is disabled for bot commands
+  const disabledChannels = guildData?.disabled_channels || [];
+  if (disabledChannels.includes(channelId) &&!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+    return;
   }
-
-  if (cmd === 'i' || cmd === 'invites') {
-    const user = msg.mentions.users.first() || msg.author;
-    const id = `${msg.guild.id}-${user.id}`;
-    const [data] = await db.select().from(schema.invites).where(eq(schema.invites.id, id));
-    const embed = new EmbedBuilder()
-.setColor('#00FF00')
-.setTitle('Invite log')
-.setDescription(`▶ **${user.username}** has **${(data?.joins || 0) - (data?.left || 0)}** invites\n\n**Joins :** ${data?.joins || 0}\n**Left :** ${data?.left || 0}\n**Fake :** ${data?.fake || 0}\n**Rejoins :** ${data?.rejoins || 0} (7d)`)
-.setThumbnail(user.displayAvatarURL())
-.setFooter({ text: `created by kitaryo | Today at ${new Date().toLocaleTimeString()}` });
-    msg.reply({ embeds: [embed] });
-  }
-
-  if (cmd === 'm') {
-    if (args[0] === 'enable') {
-      if (!msg.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) return;
-      const channels = guild?.messageChannels || [];
-      if (!channels.includes(msg.channel.id)) channels.push(msg.channel.id);
-      await db.insert(schema.guilds).values({ guildId: msg.guild.id, messageChannels: channels })
-  .onConflictDoUpdate({ target: schema.guilds.guildId, set: { messageChannels: channels } });
-      return msg.reply('✅ Message counting enabled in this channel');
+  
+  // ===== ENABLE BOT IN CHANNEL =====
+  if (command === 'enable' &&!args[0]) {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      return message.reply('You need Administrator permission!');
     }
-    if (args[0] === 'disable') {
-      if (!msg.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) return;
-      const channels = guild?.messageChannels?.filter(id => id!== msg.channel.id) || [];
-      await db.update(schema.guilds).set({ messageChannels: channels }).where(eq(schema.guilds.guildId, msg.guild.id));
-      return msg.reply('❌ Message counting disabled in this channel');
+    await sql`
+      INSERT INTO guilds (guild_id, disabled_channels) 
+      VALUES (${guildId}, '{}')
+      ON CONFLICT (guild_id) DO UPDATE SET 
+      disabled_channels = array_remove(guilds.disabled_channels, ${channelId})
+    `;
+    return message.reply('✅ Bot commands enabled in this channel!');
+  }
+  
+  // ===== DISABLE BOT IN CHANNEL =====
+  if (command === 'disable' &&!args[0]) {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      return message.reply('You need Administrator permission!');
     }
-
-    const user = msg.mentions.users.first() || msg.author;
-    const id = `${msg.guild.id}-${user.id}`;
-    const today = new Date().toISOString().slice(0, 10);
-    const [msgData] = await db.select().from(schema.messages).where(eq(schema.messages.id, id));
-    const [dailyData] = await db.select().from(schema.dailyMessages).where(eq(schema.dailyMessages.id, `${id}-${today}`));
-
-    const embed = new EmbedBuilder()
-.setColor('#00FF00')
-.setTitle(`${user.username}'s Messages`)
-.setDescription(`**All time • ${msgData?.total || 0} messages in this server!**\n**Today • ${dailyData?.count || 0} messages in this server**`)
-.setThumbnail(user.displayAvatarURL())
-.setFooter({ text: `created by kitaryo | Requested by ${msg.author.username} | Today at ${new Date().toLocaleTimeString()}` });
-    msg.reply({ embeds: [embed] });
+    await sql`
+      INSERT INTO guilds (guild_id, disabled_channels) 
+      VALUES (${guildId}, ARRAY[${channelId}])
+      ON CONFLICT (guild_id) DO UPDATE SET 
+      disabled_channels = array_append(guilds.disabled_channels, ${channelId})
+    `;
+    return message.reply('❌ Bot commands disabled in this channel!');
   }
-
-  if (cmd === 'acc') {
-    const user = msg.mentions.users.first() || msg.author;
-    const diff = Date.now() - user.createdTimestamp;
-    const years = Math.floor(diff / 31536000000);
-    const months = Math.floor((diff % 31536000000) / 2592000000);
-    const days = Math.floor((diff % 2592000000) / 86400000);
-    const embed = new EmbedBuilder()
-.setColor('#00FF00')
-.setTitle(`${user.username}'s Account Age`)
-.setDescription(`${years} years, ${months} months, ${days} days`)
-.setFooter({ text: `created by kitaryo | Requested by ${msg.author.username}` });
-    msg.reply({ embeds: [embed] });
-  }
-
-  if (cmd === 'it') {
-    if (!msg.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) return;
-    if (args[0] === 'enable') {
-      const channel = msg.mentions.channels.first() || msg.channel;
-      await db.insert(schema.guilds).values({ guildId: msg.guild.id, trackerChannel: channel.id })
-  .onConflictDoUpdate({ target: schema.guilds.guildId, set: { trackerChannel: channel.id } });
-      msg.reply(`✅ Invite tracker enabled in ${channel}`);
+  
+  // ===== ENABLE INVITE TRACKER =====
+  if (command === 'enable' && args[0] === 'it') {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      return message.reply('You need Administrator permission!');
     }
-    if (args[0] === 'disable') {
-      await db.update(schema.guilds).set({ trackerChannel: null }).where(eq(schema.guilds.guildId, msg.guild.id));
-      msg.reply('❌ Invite tracker disabled');
+    await sql`
+      INSERT INTO guilds (guild_id, tracker_channel) 
+      VALUES (${guildId}, ${channelId})
+      ON CONFLICT (guild_id) DO UPDATE SET tracker_channel = ${channelId}
+    `;
+    return message.reply(`✅ Invite tracker enabled in ${message.channel}`);
+  }
+  
+  // ===== DISABLE INVITE TRACKER =====
+  if (command === 'disable' && args[0] === 'it') {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      return message.reply('You need Administrator permission!');
     }
+    await sql`UPDATE guilds SET tracker_channel = NULL WHERE guild_id = ${guildId}`;
+    return message.reply('❌ Invite tracker disabled!');
   }
-
-  if (cmd === 'invited') {
-    const user = msg.mentions.users.first() || msg.author;
-    const users = await db.select().from(schema.inviteUsers).where(and(
-      eq(schema.inviteUsers.guildId, msg.guild.id),
-      eq(schema.inviteUsers.inviterId, user.id)
-    ));
-    const embed = new EmbedBuilder()
-.setColor('#00FF00')
-.setTitle(`▶ Invited list of ${user.username}`)
-.setDescription(users.length? users.map(u => `<@${u.memberId}>`).join('\n') : `${user.username} has no invites.`)
-.setFooter({ text: `created by kitaryo | Today at ${new Date().toLocaleTimeString()}` });
-    msg.reply({ embeds: [embed] });
+  
+  // ===== INVITES - qi i =====
+  if (command === 'i' || command === 'invites') {
+    const target = message.mentions.users.first() || message.author;
+    const data = await getInviteData(guildId, target.id);
+    const total = data.joins - data.leftCount;
+    
+    const embed = makeEmbed(`${target.username}'s Invites`, [
+      { name: 'Joins', value: `${data.joins}`, inline: true },
+      { name: 'Left', value: `${data.leftCount}`, inline: true },
+      { name: 'Fake', value: `${data.fake}`, inline: true },
+      { name: 'Rejoins', value: `${data.rejoins}`, inline: true },
+      { name: 'Total', value: `**${total}**`, inline: false }
+    ], target);
+    
+    return message.reply({ embeds: [embed] });
   }
-
-  if (cmd === 'disable' && args[0] === 'all') {
-    if (!msg.member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
-    await db.insert(schema.guilds).values({ guildId: msg.guild.id, disabledAll: true })
-.onConflictDoUpdate({ target: schema.guilds.guildId, set: { disabledAll: true } });
-    msg.reply('❌ All commands disabled in this server');
+  
+  // ===== INVITED LIST =====
+  if (command === 'invited') {
+    const target = message.mentions.users.first() || message.author;
+    const invitedUsers = await sql`
+      SELECT member_id FROM invite_users 
+      WHERE guild_id = ${guildId} AND inviter_id = ${target.id}
+      LIMIT 10
+    `;
+    
+    const list = invitedUsers.map((u, i) => `#${i+1} • <@${u.member_id}>`).join('\n') || 'No invited users';
+    const embed = makeEmbed(`Invited list of ${target.username}`, [
+      { name: 'Members', value: list, inline: false }
+    ]);
+    
+    return message.reply({ embeds: [embed] });
   }
-  if (cmd === 'enable' && args[0] === 'all') {
-    if (!msg.member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
-    await db.update(schema.guilds).set({ disabledAll: false }).where(eq(schema.guilds.guildId, msg.guild.id));
-    msg.reply('✅ All commands enabled in this server');
+  
+  // ===== INVITE LEADERBOARD =====
+  if (command === 'lb' && args[0] === 'i') {
+    const top = await sql`
+      SELECT user_id, joins, leftCount, fake, rejoins 
+      FROM invites WHERE guild_id = ${guildId} 
+      ORDER BY (joins - leftCount) DESC LIMIT 10
+    `;
+    
+    const list = top.map((u, i) => {
+      const total = u.joins - u.leftCount;
+      return `#${i+1} <@${u.user_id}> • **${total}** Invites (${u.joins} Joins, ${u.leftCount} Leaves, ${u.fake} Fakes, ${u.rejoins} Rejoins)`;
+    }).join('\n') || 'No data';
+    
+    const embed = makeEmbed('Invite Leaderboard', [{ name: 'Top 10', value: list }]);
+    return message.reply({ embeds: [embed] });
+  }
+  
+  // ===== MESSAGES =====
+  if (command === 'm' || command === 'messages') {
+    const target = message.mentions.users.first() || message.author;
+    const data = await getMessageData(guildId, target.id);
+    
+    const embed = makeEmbed(`${target.username}'s Messages`, [
+      { name: 'All time', value: `${data.total} messages in this server!`, inline: false },
+      { name: 'Today', value: `${data.today} messages in this server`, inline: false },
+      { name: 'Status', value: 'Messages are being updated in real-time', inline: false }
+    ], target);
+    
+    return message.reply({ embeds: [embed] });
+  }
+  
+  // ===== MESSAGE LEADERBOARD =====
+  if (command === 'lb' && args[0] === 'm') {
+    const top = await sql`
+      SELECT user_id, total FROM messages 
+      WHERE guild_id = ${guildId} 
+      ORDER BY total DESC LIMIT 10
+    `;
+    
+    const list = top.map((u, i) => `#${i+1} <@${u.user_id}> • **${u.total}** messages`).join('\n') || 'No data';
+    const embed = makeEmbed('Message Leaderboard', [{ name: 'Top 10', value: list }]);
+    return message.reply({ embeds: [embed] });
+  }
+  
+  // ===== RESET INVITES =====
+  if (command === 'reset' && args[0] === 'i') {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+      return message.reply('You need Manage Server permission!');
+    }
+    
+    const target = message.mentions.users.first();
+    if (target) {
+      await sql`DELETE FROM invites WHERE guild_id = ${guildId} AND user_id = ${target.id}`;
+      return message.reply(`✅ Reset invite data for ${target.username}`);
+    }
+    return message.reply('Usage: `qi reset i @user`');
+  }
+  
+  // ===== RESET ALL INVITES =====
+  if (command === 'reset' && args[0] === 'all') {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      return message.reply('You need Administrator permission!');
+    }
+    await sql`DELETE FROM invites WHERE guild_id = ${guildId}`;
+    await sql`DELETE FROM invite_users WHERE guild_id = ${guildId}`;
+    return message.reply('✅ Reset all invite data for this server.');
+  }
+  
+  // ===== RESET MESSAGES =====
+  if (command === 'reset' && args[0] === 'm') {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+      return message.reply('You need Manage Server permission!');
+    }
+    
+    const target = message.mentions.users.first();
+    if (target) {
+      await sql`DELETE FROM messages WHERE guild_id = ${guildId} AND user_id = ${target.id}`;
+      return message.reply(`✅ Reset message data for ${target.username}`);
+    } else if (args[1] === 'all') {
+      if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+        return message.reply('You need Administrator permission!');
+      }
+      await sql`DELETE FROM messages WHERE guild_id = ${guildId}`;
+      await sql`DELETE FROM daily_messages WHERE guild_id = ${guildId}`;
+      return message.reply('✅ Reset all message data for this server.');
+    }
+    return message.reply('Usage: `qi reset m @user` or `qi reset m all`');
   }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+client.login(process.env.TOKEN);
