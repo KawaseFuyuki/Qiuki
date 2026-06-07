@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS invites (
   guild_id TEXT,
   user_id TEXT,
   joins INTEGER DEFAULT 0,
-  left INTEGER DEFAULT 0,
+  leftCount INTEGER DEFAULT 0,
   fake INTEGER DEFAULT 0,
   rejoins INTEGER DEFAULT 0
 );
@@ -70,7 +70,7 @@ function makeEmbed(title, desc, user) {
 async function getInviteData(guildId, userId) {
   const id = `${guildId}-${userId}`;
   const [data] = await db.select().from(schema.invites).where(eq(schema.invites.id, id));
-  return data || { joins: 0, left: 0, fake: 0, rejoins: 0 };
+  return data || { joins: 0, leftCount: 0, fake: 0, rejoins: 0 };
 }
 
 client.once('ready', async () => {
