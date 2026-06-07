@@ -12,7 +12,7 @@ export const invites = pgTable('invites', {
   guildId: text('guild_id'),
   userId: text('user_id'),
   joins: integer('joins').default(0),
-  left: integer('left').default(0),
+  leftCount: integer('leftCount').default(0),
   fake: integer('fake').default(0),
   rejoins: integer('rejoins').default(0)
 });
