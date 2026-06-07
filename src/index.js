@@ -22,7 +22,8 @@ async function setupDB() {
     CREATE TABLE IF NOT EXISTS guilds (
       guild_id TEXT PRIMARY KEY,
       tracker_channel TEXT,
-      disabled_channels TEXT[] DEFAULT '{}'
+      disabled_channels TEXT[] DEFAULT '{}',
+      message_channels TEXT[] DEFAULT '{}'
     )
   `;
 
@@ -111,7 +112,7 @@ async function getMessageData(guildId, userId) {
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
   await setupDB();
-  client.user.setActivity('watching anime for fun xD', { type: ActivityType.Watching });
+  client.user.setActivity('anime for fun xD', { type: ActivityType.Watching });
   
   for (const guild of client.guilds.cache.values()) {
     try {
@@ -174,29 +175,36 @@ client.on('messageCreate', async message => {
   const guildId = message.guild.id;
   const userId = message.author.id;
   const channelId = message.channel.id;
-  const id = `${guildId}-${userId}`;
-  const today = new Date().toISOString().split('T')[0];
-  const todayId = `${guildId}-${userId}-${today}`;
   
-  await sql`
-    INSERT INTO messages (id, guild_id, user_id, total) 
-    VALUES (${id}, ${guildId}, ${userId}, 1)
-    ON CONFLICT (id) DO UPDATE SET total = messages.total + 1
-  `;
+  const [guildData] = await sql`SELECT * FROM guilds WHERE guild_id = ${guildId}`;
   
-  await sql`
-    INSERT INTO daily_messages (id, guild_id, user_id, date, count) 
-    VALUES (${todayId}, ${guildId}, ${userId}, ${today}, 1)
-    ON CONFLICT (id) DO UPDATE SET count = daily_messages.count + 1
-  `;
+  // Channel-specific message counting
+  const messageChannels = guildData?.message_channels || [];
+  const shouldCount = messageChannels.length === 0 || messageChannels.includes(channelId);
   
-  // PREFIX CASE INSENSITIVE FIX
+  if (shouldCount) {
+    const id = `${guildId}-${userId}`;
+    const today = new Date().toISOString().split('T')[0];
+    const todayId = `${guildId}-${userId}-${today}`;
+    
+    await sql`
+      INSERT INTO messages (id, guild_id, user_id, total) 
+      VALUES (${id}, ${guildId}, ${userId}, 1)
+      ON CONFLICT (id) DO UPDATE SET total = messages.total + 1
+    `;
+    
+    await sql`
+      INSERT INTO daily_messages (id, guild_id, user_id, date, count) 
+      VALUES (${todayId}, ${guildId}, ${userId}, ${today}, 1)
+      ON CONFLICT (id) DO UPDATE SET count = daily_messages.count + 1
+    `;
+  }
+  
+  // PREFIX CASE INSENSITIVE
   if (!message.content.toLowerCase().startsWith(prefix)) return;
   
   const args = message.content.slice(prefix.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
-  
-  const [guildData] = await sql`SELECT * FROM guilds WHERE guild_id = ${guildId}`;
   
   // ===== PING EMBED =====
   if (command === 'ping') {
@@ -211,19 +219,19 @@ client.on('messageCreate', async message => {
       { name: '📨 Invites', value: '`qi i` - Your invites\n`qi invited @user` - User invite list\n`qi lb i` - Invite leaderboard', inline: false },
       { name: '💬 Messages', value: '`qi m` - Your messages\n`qi lb m` - Message leaderboard', inline: false },
       { name: '⚙️ Admin - Invites', value: '`qi reset i @user` - Reset user invites\n`qi reset all` - Reset all invites\n`qi enable it` - Enable tracker here\n`qi disable it` - Disable tracker', inline: false },
-      { name: '⚙️ Admin - Messages', value: '`qi reset m @user` - Reset user messages\n`qi reset m all` - Reset all messages', inline: false },
+      { name: '⚙️ Admin - Messages', value: '`qi reset m @user` - Reset user messages\n`qi reset m all` - Reset all messages\n`qi enable m` - Enable msg count here\n`qi disable m` - Disable msg count here', inline: false },
       { name: '⚙️ Admin - Channels', value: '`qi enable` - Enable bot in this channel\n`qi disable` - Disable bot in this channel', inline: false }
     ]);
     return message.reply({ embeds: [embed] });
   }
   
-  // Check if channel disabled
+  // Check if commands disabled in this channel
   const disabledChannels = guildData?.disabled_channels || [];
   if (disabledChannels.includes(channelId) &&!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
     return;
   }
   
-  // ===== ENABLE BOT =====
+  // ===== ENABLE BOT COMMANDS =====
   if (command === 'enable' &&!args[0]) {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return message.reply('You need Administrator permission!');
@@ -238,7 +246,7 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== DISABLE BOT =====
+  // ===== DISABLE BOT COMMANDS =====
   if (command === 'disable' &&!args[0]) {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return message.reply('You need Administrator permission!');
@@ -253,7 +261,37 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== ENABLE TRACKER =====
+  // ===== ENABLE MESSAGE COUNTING =====
+  if (command === 'enable' && args[0] === 'm') {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      return message.reply('You need Administrator permission!');
+    }
+    await sql`
+      INSERT INTO guilds (guild_id, message_channels) 
+      VALUES (${guildId}, ARRAY[${channelId}])
+      ON CONFLICT (guild_id) DO UPDATE SET 
+      message_channels = array_append(guilds.message_channels, ${channelId})
+    `;
+    const embed = makeEmbed(null, `✅ Message counting enabled in ${message.channel}`);
+    return message.reply({ embeds: [embed] });
+  }
+  
+  // ===== DISABLE MESSAGE COUNTING =====
+  if (command === 'disable' && args[0] === 'm') {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      return message.reply('You need Administrator permission!');
+    }
+    await sql`
+      INSERT INTO guilds (guild_id, message_channels) 
+      VALUES (${guildId}, '{}')
+      ON CONFLICT (guild_id) DO UPDATE SET 
+      message_channels = array_remove(guilds.message_channels, ${channelId})
+    `;
+    const embed = makeEmbed(null, `❌ Message counting disabled in ${message.channel}`);
+    return message.reply({ embeds: [embed] });
+  }
+  
+  // ===== ENABLE INVITE TRACKER =====
   if (command === 'enable' && args[0] === 'it') {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return message.reply('You need Administrator permission!');
@@ -267,7 +305,7 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== DISABLE TRACKER =====
+  // ===== DISABLE INVITE TRACKER =====
   if (command === 'disable' && args[0] === 'it') {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return message.reply('You need Administrator permission!');
@@ -277,7 +315,7 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== INVITES - FALCON STYLE EMBED =====
+  // ===== INVITES - FALCON STYLE =====
   if (command === 'i' || command === 'invites') {
     const target = message.mentions.users.first() || message.author;
     const data = await getInviteData(guildId, target.id);
@@ -378,7 +416,7 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== RESET MESSAGES =====
+  // ===== RESET MESSAGES - FIXED =====
   if (command === 'reset' && args[0] === 'm') {
     if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
       return message.reply('You need Manage Server permission!');
@@ -387,6 +425,7 @@ client.on('messageCreate', async message => {
     const target = message.mentions.users.first();
     if (target) {
       await sql`DELETE FROM messages WHERE guild_id = ${guildId} AND user_id = ${target.id}`;
+      await sql`DELETE FROM daily_messages WHERE guild_id = ${guildId} AND user_id = ${target.id}`;
       const embed = makeEmbed(null, `✅ Reset message data for ${target.username}`);
       return message.reply({ embeds: [embed] });
     } else if (args[1] === 'all') {
