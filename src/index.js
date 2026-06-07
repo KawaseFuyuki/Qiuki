@@ -33,7 +33,7 @@ async function setupDB() {
       guild_id TEXT,
       user_id TEXT,
       joins INTEGER DEFAULT 0,
-      leftCount INTEGER DEFAULT 0,
+      leftcount INTEGER DEFAULT 0,
       fake INTEGER DEFAULT 0,
       rejoins INTEGER DEFAULT 0
     )
@@ -92,7 +92,12 @@ function makeEmbed(title, desc, user) {
 async function getInviteData(guildId, userId) {
   const id = `${guildId}-${userId}`;
   const [data] = await sql`SELECT * FROM invites WHERE id = ${id}`;
-  return data || { joins: 0, leftCount: 0, fake: 0, rejoins: 0 };
+  return {
+    joins: data?.joins || 0,
+    leftCount: data?.leftcount || 0,
+    fake: data?.fake || 0,
+    rejoins: data?.rejoins || 0
+  };
 }
 
 async function getMessageData(guildId, userId) {
@@ -148,7 +153,9 @@ client.on('guildMemberAdd', async member => {
       const channel = member.guild.channels.cache.get(guildData.tracker_channel);
       const data = await getInviteData(member.guild.id, inviterId);
       const total = data.joins - data.leftCount;
-      channel?.send(`<@${inviterId}> invited ${member.user} now he have ${total} invite${total!== 1? 's' : ''}`);
+      
+      const embed = makeEmbed(null, `<@${inviterId}> invited ${member.user} now he have **${total}** invite${total!== 1? 's' : ''}`);
+      channel?.send({ embeds: [embed] });
     }
   }
   
@@ -163,7 +170,7 @@ client.on('guildMemberRemove', async member => {
   
   if (data?.inviter_id) {
     const id = `${member.guild.id}-${data.inviter_id}`;
-    await sql`UPDATE invites SET leftCount = leftCount + 1 WHERE id = ${id}`;
+    await sql`UPDATE invites SET leftcount = leftcount + 1 WHERE id = ${id}`;
     await sql`DELETE FROM invite_users WHERE guild_id = ${member.guild.id} AND member_id = ${member.id}`;
   }
 });
@@ -178,7 +185,6 @@ client.on('messageCreate', async message => {
   
   const [guildData] = await sql`SELECT * FROM guilds WHERE guild_id = ${guildId}`;
   
-  // Channel-specific message counting
   const messageChannels = guildData?.message_channels || [];
   const shouldCount = messageChannels.length === 0 || messageChannels.includes(channelId);
   
@@ -200,19 +206,16 @@ client.on('messageCreate', async message => {
     `;
   }
   
-  // PREFIX CASE INSENSITIVE
   if (!message.content.toLowerCase().startsWith(prefix)) return;
   
   const args = message.content.slice(prefix.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
   
-  // ===== PING EMBED =====
   if (command === 'ping') {
     const embed = makeEmbed('🏓 Pong!', `Latency: **${client.ws.ping}ms**`);
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== HELP =====
   if (command === 'help') {
     const embed = makeEmbed('Qiuki Commands', null);
     embed.addFields([
@@ -225,13 +228,11 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // Check if commands disabled in this channel
   const disabledChannels = guildData?.disabled_channels || [];
   if (disabledChannels.includes(channelId) &&!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
     return;
   }
   
-  // ===== ENABLE BOT COMMANDS =====
   if (command === 'enable' &&!args[0]) {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return message.reply('You need Administrator permission!');
@@ -246,7 +247,6 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== DISABLE BOT COMMANDS =====
   if (command === 'disable' &&!args[0]) {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return message.reply('You need Administrator permission!');
@@ -261,7 +261,6 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== ENABLE MESSAGE COUNTING =====
   if (command === 'enable' && args[0] === 'm') {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return message.reply('You need Administrator permission!');
@@ -276,7 +275,6 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== DISABLE MESSAGE COUNTING =====
   if (command === 'disable' && args[0] === 'm') {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return message.reply('You need Administrator permission!');
@@ -291,7 +289,6 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== ENABLE INVITE TRACKER =====
   if (command === 'enable' && args[0] === 'it') {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return message.reply('You need Administrator permission!');
@@ -305,7 +302,6 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== DISABLE INVITE TRACKER =====
   if (command === 'disable' && args[0] === 'it') {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return message.reply('You need Administrator permission!');
@@ -315,7 +311,6 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== INVITES - FALCON STYLE =====
   if (command === 'i' || command === 'invites') {
     const target = message.mentions.users.first() || message.author;
     const data = await getInviteData(guildId, target.id);
@@ -327,7 +322,6 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== INVITED LIST =====
   if (command === 'invited') {
     const target = message.mentions.users.first() || message.author;
     const invitedUsers = await sql`
@@ -343,17 +337,16 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== INVITE LEADERBOARD =====
   if (command === 'lb' && args[0] === 'i') {
     const top = await sql`
-      SELECT user_id, joins, leftCount, fake, rejoins 
+      SELECT user_id, joins, leftcount, fake, rejoins 
       FROM invites WHERE guild_id = ${guildId} 
-      ORDER BY (joins - leftCount) DESC LIMIT 10
+      ORDER BY (joins - leftcount) DESC LIMIT 10
     `;
     
     const list = top.map((u, i) => {
-      const total = u.joins - u.leftCount;
-      return `#${i+1} <@${u.user_id}> • **${total}** Invites (${u.joins} Joins, ${u.leftCount} Leaves, ${u.fake} Fakes, ${u.rejoins} Rejoins)`;
+      const total = u.joins - u.leftcount;
+      return `#${i+1} <@${u.user_id}> • **${total}** Invites (${u.joins} Joins, ${u.leftcount} Leaves, ${u.fake} Fakes, ${u.rejoins} Rejoins)`;
     }).join('\n') || 'No data';
     
     const embed = makeEmbed('Invite Leaderboard', null);
@@ -361,7 +354,6 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== MESSAGES =====
   if (command === 'm' || command === 'messages') {
     const target = message.mentions.users.first() || message.author;
     const data = await getMessageData(guildId, target.id);
@@ -376,7 +368,6 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== MESSAGE LEADERBOARD =====
   if (command === 'lb' && args[0] === 'm') {
     const top = await sql`
       SELECT user_id, total FROM messages 
@@ -390,7 +381,6 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== RESET INVITES =====
   if (command === 'reset' && args[0] === 'i') {
     if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
       return message.reply('You need Manage Server permission!');
@@ -405,7 +395,6 @@ client.on('messageCreate', async message => {
     return message.reply('Usage: `qi reset i @user`');
   }
   
-  // ===== RESET ALL INVITES =====
   if (command === 'reset' && args[0] === 'all') {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return message.reply('You need Administrator permission!');
@@ -416,7 +405,6 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // ===== RESET MESSAGES - FIXED =====
   if (command === 'reset' && args[0] === 'm') {
     if (!message.member.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
       return message.reply('You need Manage Server permission!');
