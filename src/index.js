@@ -22,40 +22,52 @@ const invites = new Map();
 
 // Auto-create tables on start
 await sql`
-CREATE TABLE IF NOT EXISTS guilds (
-  guild_id TEXT PRIMARY KEY,
-  tracker_channel TEXT,
-  disabled_all BOOLEAN DEFAULT FALSE,
-  message_channels TEXT[] DEFAULT '{}'
-);
-CREATE TABLE IF NOT EXISTS invites (
-  id TEXT PRIMARY KEY,
-  guild_id TEXT,
-  user_id TEXT,
-  joins INTEGER DEFAULT 0,
-  leftCount INTEGER DEFAULT 0,
-  fake INTEGER DEFAULT 0,
-  rejoins INTEGER DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS invite_users (
-  id TEXT PRIMARY KEY,
-  guild_id TEXT,
-  inviter_id TEXT,
-  member_id TEXT
-);
-CREATE TABLE IF NOT EXISTS messages (
-  id TEXT PRIMARY KEY,
-  guild_id TEXT,
-  user_id TEXT,
-  total INTEGER DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS daily_messages (
-  id TEXT PRIMARY KEY,
-  guild_id TEXT,
-  user_id TEXT,
-  date TEXT,
-  count INTEGER DEFAULT 0
-);
+  CREATE TABLE IF NOT EXISTS guilds (
+    guild_id TEXT PRIMARY KEY,
+    tracker_channel TEXT,
+    disabled_all BOOLEAN DEFAULT FALSE,
+    message_channels TEXT[] DEFAULT '{}'
+  )
+`;
+
+await sql`
+  CREATE TABLE IF NOT EXISTS invites (
+    id TEXT PRIMARY KEY,
+    guild_id TEXT,
+    user_id TEXT,
+    joins INTEGER DEFAULT 0,
+    leftCount INTEGER DEFAULT 0,
+    fake INTEGER DEFAULT 0,
+    rejoins INTEGER DEFAULT 0
+  )
+`;
+
+await sql`
+  CREATE TABLE IF NOT EXISTS invite_users (
+    id TEXT PRIMARY KEY,
+    guild_id TEXT,
+    inviter_id TEXT,
+    member_id TEXT
+  )
+`;
+
+await sql`
+  CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    guild_id TEXT,
+    user_id TEXT,
+    total INTEGER DEFAULT 0
+  )
+`;
+
+await sql`
+  CREATE TABLE IF NOT EXISTS daily_messages (
+    id TEXT PRIMARY KEY,
+    guild_id TEXT,
+    user_id TEXT,
+    date TEXT,
+    count INTEGER DEFAULT 0
+  )
 `;
 
 function makeEmbed(title, desc, user) {
