@@ -13,7 +13,7 @@ const client = new Client({
 });
 
 const sql = postgres(process.env.DATABASE_URL, { ssl: 'require' });
-const prefix = 'qi ';
+const prefix = 'qi';
 const invites = new Map();
 
 // ===== DATABASE SETUP =====
@@ -65,14 +65,10 @@ async function setupDB() {
       count INTEGER DEFAULT 0
     )
   `;
-
-  try {
-    await sql`ALTER TABLE invites RENAME COLUMN left TO leftCount`;
-  } catch (e) {}
 }
 
-// ===== EMBED HELPER =====
-function makeEmbed(title, fields = [], user) {
+// ===== EMBED HELPER - GREEN COLOR =====
+function makeEmbed(title, desc, user) {
   const time = new Date().toLocaleTimeString('en-IN', { 
     timeZone: 'Asia/Kolkata', 
     hour: '2-digit', 
@@ -81,17 +77,17 @@ function makeEmbed(title, fields = [], user) {
   });
   
   const embed = new EmbedBuilder()
- .setColor('#00FFFF')
- .setTitle(title)
- .setFooter({ text: `created by kitaryo | Today at ${time}` });
+.setColor('#00FF00')
+.setFooter({ text: `created by kitaryo | Today at ${time}` });
 
+  if (title) embed.setTitle(title);
+  if (desc) embed.setDescription(desc);
   if (user) embed.setThumbnail(user.displayAvatarURL());
-  if (fields.length > 0) embed.addFields(fields);
   
   return embed;
 }
 
-// ===== GET DATA FUNCTIONS =====
+// ===== GET DATA =====
 async function getInviteData(guildId, userId) {
   const id = `${guildId}-${userId}`;
   const [data] = await sql`SELECT * FROM invites WHERE id = ${id}`;
@@ -115,9 +111,7 @@ async function getMessageData(guildId, userId) {
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
   await setupDB();
-  
-  // Set status
-  client.user.setActivity('anime for fun xD', { type: ActivityType.Watching });
+  client.user.setActivity('watching anime for fun xD', { type: ActivityType.Watching });
   
   for (const guild of client.guilds.cache.values()) {
     try {
@@ -133,7 +127,7 @@ client.on('guildMemberAdd', async member => {
   const newInvites = await member.guild.invites.fetch();
   const usedInvite = newInvites.find(inv => inv.uses > (cachedInvites?.get(inv.code) || 0));
   
-  if (usedInvite) {
+  if (usedInvite && usedInvite.inviter) {
     const inviterId = usedInvite.inviter.id;
     const id = `${member.guild.id}-${inviterId}`;
     
@@ -184,7 +178,6 @@ client.on('messageCreate', async message => {
   const today = new Date().toISOString().split('T')[0];
   const todayId = `${guildId}-${userId}-${today}`;
   
-  // Track messages
   await sql`
     INSERT INTO messages (id, guild_id, user_id, total) 
     VALUES (${id}, ${guildId}, ${userId}, 1)
@@ -197,21 +190,24 @@ client.on('messageCreate', async message => {
     ON CONFLICT (id) DO UPDATE SET count = daily_messages.count + 1
   `;
   
-  if (!message.content.startsWith(prefix)) return;
+  // PREFIX CASE INSENSITIVE FIX
+  if (!message.content.toLowerCase().startsWith(prefix)) return;
   
   const args = message.content.slice(prefix.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
   
   const [guildData] = await sql`SELECT * FROM guilds WHERE guild_id = ${guildId}`;
   
-  // ===== PING =====
+  // ===== PING EMBED =====
   if (command === 'ping') {
-    return message.reply(`Pong! ${client.ws.ping}ms`);
+    const embed = makeEmbed('🏓 Pong!', `Latency: **${client.ws.ping}ms**`);
+    return message.reply({ embeds: [embed] });
   }
   
   // ===== HELP =====
   if (command === 'help') {
-    const embed = makeEmbed('Qiuki Commands', [
+    const embed = makeEmbed('Qiuki Commands', null);
+    embed.addFields([
       { name: '📨 Invites', value: '`qi i` - Your invites\n`qi invited @user` - User invite list\n`qi lb i` - Invite leaderboard', inline: false },
       { name: '💬 Messages', value: '`qi m` - Your messages\n`qi lb m` - Message leaderboard', inline: false },
       { name: '⚙️ Admin - Invites', value: '`qi reset i @user` - Reset user invites\n`qi reset all` - Reset all invites\n`qi enable it` - Enable tracker here\n`qi disable it` - Disable tracker', inline: false },
@@ -221,13 +217,13 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // Check if channel is disabled
+  // Check if channel disabled
   const disabledChannels = guildData?.disabled_channels || [];
   if (disabledChannels.includes(channelId) &&!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
     return;
   }
   
-  // ===== ENABLE BOT IN CHANNEL =====
+  // ===== ENABLE BOT =====
   if (command === 'enable' &&!args[0]) {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return message.reply('You need Administrator permission!');
@@ -238,10 +234,11 @@ client.on('messageCreate', async message => {
       ON CONFLICT (guild_id) DO UPDATE SET 
       disabled_channels = array_remove(guilds.disabled_channels, ${channelId})
     `;
-    return message.reply('✅ Bot commands enabled in this channel!');
+    const embed = makeEmbed(null, '✅ Bot commands enabled in this channel!');
+    return message.reply({ embeds: [embed] });
   }
   
-  // ===== DISABLE BOT IN CHANNEL =====
+  // ===== DISABLE BOT =====
   if (command === 'disable' &&!args[0]) {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return message.reply('You need Administrator permission!');
@@ -252,10 +249,11 @@ client.on('messageCreate', async message => {
       ON CONFLICT (guild_id) DO UPDATE SET 
       disabled_channels = array_append(guilds.disabled_channels, ${channelId})
     `;
-    return message.reply('❌ Bot commands disabled in this channel!');
+    const embed = makeEmbed(null, '❌ Bot commands disabled in this channel!');
+    return message.reply({ embeds: [embed] });
   }
   
-  // ===== ENABLE INVITE TRACKER =====
+  // ===== ENABLE TRACKER =====
   if (command === 'enable' && args[0] === 'it') {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return message.reply('You need Administrator permission!');
@@ -265,31 +263,28 @@ client.on('messageCreate', async message => {
       VALUES (${guildId}, ${channelId})
       ON CONFLICT (guild_id) DO UPDATE SET tracker_channel = ${channelId}
     `;
-    return message.reply(`✅ Invite tracker enabled in ${message.channel}`);
+    const embed = makeEmbed(null, `✅ Invite tracker enabled in ${message.channel}`);
+    return message.reply({ embeds: [embed] });
   }
   
-  // ===== DISABLE INVITE TRACKER =====
+  // ===== DISABLE TRACKER =====
   if (command === 'disable' && args[0] === 'it') {
     if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return message.reply('You need Administrator permission!');
     }
     await sql`UPDATE guilds SET tracker_channel = NULL WHERE guild_id = ${guildId}`;
-    return message.reply('❌ Invite tracker disabled!');
+    const embed = makeEmbed(null, '❌ Invite tracker disabled!');
+    return message.reply({ embeds: [embed] });
   }
   
-  // ===== INVITES =====
+  // ===== INVITES - FALCON STYLE EMBED =====
   if (command === 'i' || command === 'invites') {
     const target = message.mentions.users.first() || message.author;
     const data = await getInviteData(guildId, target.id);
     const total = data.joins - data.leftCount;
     
-    const embed = makeEmbed(`${target.username}'s Invites`, [
-      { name: 'Joins', value: `${data.joins}`, inline: true },
-      { name: 'Left', value: `${data.leftCount}`, inline: true },
-      { name: 'Fake', value: `${data.fake}`, inline: true },
-      { name: 'Rejoins', value: `${data.rejoins}`, inline: true },
-      { name: 'Total', value: `**${total}**`, inline: false }
-    ], target);
+    const embed = makeEmbed('Invite log', null, target);
+    embed.setDescription(`▶ **${target.username}** has **${total}** invites\n\n**Joins :** ${data.joins}\n**Left :** ${data.leftCount}\n**Fake :** ${data.fake}\n**Rejoins :** ${data.rejoins} (7d)`);
     
     return message.reply({ embeds: [embed] });
   }
@@ -304,9 +299,8 @@ client.on('messageCreate', async message => {
     `;
     
     const list = invitedUsers.map((u, i) => `#${i+1} • <@${u.member_id}>`).join('\n') || 'No invited users';
-    const embed = makeEmbed(`Invited list of ${target.username}`, [
-      { name: 'Members', value: list, inline: false }
-    ]);
+    const embed = makeEmbed(`Invited list of ${target.username}`, null);
+    embed.addFields([{ name: 'Members', value: list, inline: false }]);
     
     return message.reply({ embeds: [embed] });
   }
@@ -324,7 +318,8 @@ client.on('messageCreate', async message => {
       return `#${i+1} <@${u.user_id}> • **${total}** Invites (${u.joins} Joins, ${u.leftCount} Leaves, ${u.fake} Fakes, ${u.rejoins} Rejoins)`;
     }).join('\n') || 'No data';
     
-    const embed = makeEmbed('Invite Leaderboard', [{ name: 'Top 10', value: list }]);
+    const embed = makeEmbed('Invite Leaderboard', null);
+    embed.addFields([{ name: 'Top 10', value: list }]);
     return message.reply({ embeds: [embed] });
   }
   
@@ -333,11 +328,12 @@ client.on('messageCreate', async message => {
     const target = message.mentions.users.first() || message.author;
     const data = await getMessageData(guildId, target.id);
     
-    const embed = makeEmbed(`${target.username}'s Messages`, [
+    const embed = makeEmbed(`${target.username}'s Messages`, null, target);
+    embed.addFields([
       { name: 'All time', value: `${data.total} messages in this server!`, inline: false },
       { name: 'Today', value: `${data.today} messages in this server`, inline: false },
       { name: 'Status', value: 'Messages are being updated in real-time', inline: false }
-    ], target);
+    ]);
     
     return message.reply({ embeds: [embed] });
   }
@@ -351,7 +347,8 @@ client.on('messageCreate', async message => {
     `;
     
     const list = top.map((u, i) => `#${i+1} <@${u.user_id}> • **${u.total}** messages`).join('\n') || 'No data';
-    const embed = makeEmbed('Message Leaderboard', [{ name: 'Top 10', value: list }]);
+    const embed = makeEmbed('Message Leaderboard', null);
+    embed.addFields([{ name: 'Top 10', value: list }]);
     return message.reply({ embeds: [embed] });
   }
   
@@ -364,7 +361,8 @@ client.on('messageCreate', async message => {
     const target = message.mentions.users.first();
     if (target) {
       await sql`DELETE FROM invites WHERE guild_id = ${guildId} AND user_id = ${target.id}`;
-      return message.reply(`✅ Reset invite data for ${target.username}`);
+      const embed = makeEmbed(null, `✅ Reset invite data for ${target.username}`);
+      return message.reply({ embeds: [embed] });
     }
     return message.reply('Usage: `qi reset i @user`');
   }
@@ -376,7 +374,8 @@ client.on('messageCreate', async message => {
     }
     await sql`DELETE FROM invites WHERE guild_id = ${guildId}`;
     await sql`DELETE FROM invite_users WHERE guild_id = ${guildId}`;
-    return message.reply('✅ Reset all invite data for this server.');
+    const embed = makeEmbed(null, '✅ Reset all invite data for this server.');
+    return message.reply({ embeds: [embed] });
   }
   
   // ===== RESET MESSAGES =====
@@ -388,14 +387,16 @@ client.on('messageCreate', async message => {
     const target = message.mentions.users.first();
     if (target) {
       await sql`DELETE FROM messages WHERE guild_id = ${guildId} AND user_id = ${target.id}`;
-      return message.reply(`✅ Reset message data for ${target.username}`);
+      const embed = makeEmbed(null, `✅ Reset message data for ${target.username}`);
+      return message.reply({ embeds: [embed] });
     } else if (args[1] === 'all') {
       if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
         return message.reply('You need Administrator permission!');
       }
       await sql`DELETE FROM messages WHERE guild_id = ${guildId}`;
       await sql`DELETE FROM daily_messages WHERE guild_id = ${guildId}`;
-      return message.reply('✅ Reset all message data for this server.');
+      const embed = makeEmbed(null, '✅ Reset all message data for this server.');
+      return message.reply({ embeds: [embed] });
     }
     return message.reply('Usage: `qi reset m @user` or `qi reset m all`');
   }
