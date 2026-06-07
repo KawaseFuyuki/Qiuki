@@ -1,5 +1,5 @@
-const { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionsBitField, ActivityType } = require('discord.js');
-const postgres = require('postgres');
+import { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionsBitField, ActivityType } from 'discord.js';
+import postgres from 'postgres';
 
 const client = new Client({
   intents: [
@@ -81,9 +81,9 @@ function makeEmbed(title, fields = [], user) {
   });
   
   const embed = new EmbedBuilder()
-  .setColor('#00FFFF')
-  .setTitle(title)
-  .setFooter({ text: `created by kitaryo | Today at ${time}` });
+ .setColor('#00FFFF')
+ .setTitle(title)
+ .setFooter({ text: `created by kitaryo | Today at ${time}` });
 
   if (user) embed.setThumbnail(user.displayAvatarURL());
   if (fields.length > 0) embed.addFields(fields);
@@ -204,12 +204,12 @@ client.on('messageCreate', async message => {
   
   const [guildData] = await sql`SELECT * FROM guilds WHERE guild_id = ${guildId}`;
   
-  // ===== PING - Always works =====
+  // ===== PING =====
   if (command === 'ping') {
     return message.reply(`Pong! ${client.ws.ping}ms`);
   }
   
-  // ===== HELP - Always works =====
+  // ===== HELP =====
   if (command === 'help') {
     const embed = makeEmbed('Qiuki Commands', [
       { name: '📨 Invites', value: '`qi i` - Your invites\n`qi invited @user` - User invite list\n`qi lb i` - Invite leaderboard', inline: false },
@@ -221,7 +221,7 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
   
-  // Check if channel is disabled for bot commands
+  // Check if channel is disabled
   const disabledChannels = guildData?.disabled_channels || [];
   if (disabledChannels.includes(channelId) &&!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
     return;
@@ -277,7 +277,7 @@ client.on('messageCreate', async message => {
     return message.reply('❌ Invite tracker disabled!');
   }
   
-  // ===== INVITES - qi i =====
+  // ===== INVITES =====
   if (command === 'i' || command === 'invites') {
     const target = message.mentions.users.first() || message.author;
     const data = await getInviteData(guildId, target.id);
