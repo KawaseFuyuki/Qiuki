@@ -257,7 +257,7 @@ client.on('messageCreate', async message => {
   if (command === 'help') {
     const embed = makeEmbed('Qiuki Commands', null);
     embed.addFields([
-      { name: '📨 Invites', value: '`qi i` - Your invites\n`qi invited @user` - User invite list\n`qi lb i` - Invite leaderboard', inline: false },
+      { name: '📨 Invites', value: '`qi i` - Your invites\n`qi invited @user` - User invite list\n`qi inviter @user` - Who invited this user\n`qi lb i` - Invite leaderboard', inline: false },
       { name: '💬 Messages', value: '`qi m` - Your messages\n`qi lb m` - Message leaderboard', inline: false },
       { name: '⚙️ Admin - Invites', value: '`qi reset i @user` - Reset user invites\n`qi reset all` - Reset all invites\n`qi enable it` - Enable tracker here\n`qi disable it` - Disable tracker', inline: false },
       { name: '⚙️ Admin - Messages', value: '`qi reset m @user` - Reset user messages\n`qi reset m all` - Reset all messages\n`qi enable m` - Enable msg count here\n`qi disable m` - Disable msg count here', inline: false },
@@ -353,6 +353,30 @@ client.on('messageCreate', async message => {
     const embed = makeEmbed(`Invited list of ${target.username}`, null);
     embed.addFields([{ name: 'Members', value: list, inline: false }]);
 
+    return message.reply({ embeds: [embed] });
+  }
+
+  // ===== NEW COMMAND - INVITER =====
+  if (command === 'inviter') {
+    const target = message.mentions.users.first();
+
+    if (!target) {
+      return message.reply('Usage: `qi inviter @user`');
+    }
+
+    const [data] = await sql`
+      SELECT inviter_id FROM invite_users
+      WHERE guild_id = ${guildId} AND member_id = ${target.id}
+    `;
+
+    if (!data?.inviter_id) {
+      const embed = makeEmbed('Inviter Info', null, target);
+      embed.setDescription(`❌ **${target.username}** was not invited by anyone or data not found.\n\n*Maybe they joined using server discovery or vanity URL*`);
+      return message.reply({ embeds: [embed] });
+    }
+
+    const embed = makeEmbed('Inviter Info', null, target);
+    embed.setDescription(`✅ **${target.username}** was invited by <@${data.inviter_id}>`);
     return message.reply({ embeds: [embed] });
   }
 
