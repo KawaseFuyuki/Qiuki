@@ -32,7 +32,6 @@ async function setupDB() {
     )
   `;
 
-  // Fix for existing tables missing columns
   await sql`ALTER TABLE guilds ADD COLUMN IF NOT EXISTS disabled_channels TEXT[] DEFAULT '{}';`;
   await sql`ALTER TABLE guilds ADD COLUMN IF NOT EXISTS message_channels TEXT[] DEFAULT '{}';`;
   await sql`ALTER TABLE guilds ADD COLUMN IF NOT EXISTS tracker_channel TEXT;`;
@@ -98,6 +97,23 @@ function makeEmbed(title, desc, user) {
   if (user) embed.setThumbnail(user.displayAvatarURL());
 
   return embed;
+}
+
+// ===== GET USER FROM MENTION OR ID =====
+async function getUserFromMentionOrID(guild, input) {
+  if (!input) return null;
+
+  // Remove <@> and <!@> if mention
+  const id = input.replace(/[<@!>]/g, '');
+
+  // Check if valid snowflake ID
+  if (!/^\d{17,19}$/.test(id)) return null;
+
+  try {
+    return await guild.members.fetch(id);
+  } catch {
+    return null;
+  }
 }
 
 // ===== GET DATA =====
@@ -228,9 +244,7 @@ client.on('messageCreate', async message => {
   const isDisabled = disabledChannels.includes(channelId);
   const isAdmin = message.member.permissions.has(PermissionsBitField.Flags.Administrator);
 
-  // Agar channel disabled hai
   if (isDisabled) {
-    // Sirf 'enable' command allow hai, aur wo bhi sirf Admin ke liye
     if (command === 'enable' &&!args[0]) {
       if (!isAdmin) {
         return message.reply('You need Administrator permission!');
@@ -244,7 +258,6 @@ client.on('messageCreate', async message => {
       const embed = makeEmbed(null, '✅ Bot commands enabled in this channel!');
       return message.reply({ embeds: [embed] });
     }
-    // Baaki sab commands block - koi reply nahi
     return;
   }
   // ===== DISABLE CHECK KHATAM =====
@@ -257,7 +270,7 @@ client.on('messageCreate', async message => {
   if (command === 'help') {
     const embed = makeEmbed('Qiuki Commands', null);
     embed.addFields([
-      { name: '📨 Invites', value: '`qi i` - Your invites\n`qi invited @user` - User invite list\n`qi inviter @user` - Who invited this user\n`qi lb i` - Invite leaderboard', inline: false },
+      { name: '📨 Invites', value: '`qi i [@user/ID]` - Your invites\n`qi invited @user/ID` - User invite list\n`qi inviter @user/ID` - Who invited this user\n`qi lb i` - Invite leaderboard', inline: false },
       { name: '💬 Messages', value: '`qi m` - Your messages\n`qi lb m` - Message leaderboard', inline: false },
       { name: '⚙️ Admin - Invites', value: '`qi reset i @user` - Reset user invites\n`qi reset all` - Reset all invites\n`qi enable it` - Enable tracker here\n`qi disable it` - Disable tracker', inline: false },
       { name: '⚙️ Admin - Messages', value: '`qi reset m @user` - Reset user messages\n`qi reset m all` - Reset all messages\n`qi enable m` - Enable msg count here\n`qi disable m` - Disable msg count here', inline: false },
@@ -331,7 +344,7 @@ client.on('messageCreate', async message => {
   }
 
   if (command === 'i' || command === 'invites') {
-    const target = message.mentions.users.first() || message.author;
+    const target = message.mentions.users.first() || await getUserFromMentionOrID(message.guild, args[0])?.user || message.author;
     const data = await getInviteData(guildId, target.id);
     const total = data.joins - data.leftCount;
 
@@ -341,8 +354,19 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
 
+  // ===== UPDATED INVITED COMMAND - ID SUPPORT =====
   if (command === 'invited') {
-    const target = message.mentions.users.first() || message.author;
+    let target = message.mentions.users.first();
+
+    if (!target && args[0]) {
+      const member = await getUserFromMentionOrID(message.guild, args[0]);
+      target = member?.user;
+    }
+
+    if (!target) {
+      target = message.author;
+    }
+
     const invitedUsers = await sql`
       SELECT member_id FROM invite_users
       WHERE guild_id = ${guildId} AND inviter_id = ${target.id}
@@ -356,12 +380,17 @@ client.on('messageCreate', async message => {
     return message.reply({ embeds: [embed] });
   }
 
-  // ===== NEW COMMAND - INVITER =====
+  // ===== UPDATED INVITER COMMAND - ID SUPPORT =====
   if (command === 'inviter') {
-    const target = message.mentions.users.first();
+    let target = message.mentions.users.first();
+
+    if (!target && args[0]) {
+      const member = await getUserFromMentionOrID(message.guild, args[0]);
+      target = member?.user;
+    }
 
     if (!target) {
-      return message.reply('Usage: `qi inviter @user`');
+      return message.reply('Usage: `qi inviter @user` or `qi inviter USER_ID`');
     }
 
     const [data] = await sql`
